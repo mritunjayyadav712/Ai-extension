@@ -57,6 +57,9 @@ export interface DOMObservation {
   pageTitle: string;
   messages: ChatMessage[];
   isStreaming: boolean;
+  scrollTop?: number;
+  scrollHeight?: number;
+  clientHeight?: number;
 }
 
 export interface MutationLog {

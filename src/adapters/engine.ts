@@ -1,18 +1,19 @@
 import { DOMObservation } from '../core/models';
 import { PlatformAdapter } from './types';
 import { ConversationAcquirer } from '../core/acquisition/ConversationAcquirer';
+import { APIStrategy } from '../core/acquisition/strategies/APIStrategy';
 import { VisibleDOMStrategy } from '../core/acquisition/strategies/VisibleDOMStrategy';
 import { HydrationStrategy } from '../core/acquisition/strategies/HydrationStrategy';
+import { ConversationReadyDetector } from './ConversationReadyDetector';
+import { tagAllCandidateScrollContainers, inspectScrollContainer } from './utils';
 
-function hashMessages(messages: any[]): string {
+function hashMessages(messages: { id: string; text: string }[]): string {
   let str = '';
   for (const m of messages) {
     str += m.id + m.text.length + m.text.slice(0, 50);
   }
   return str;
 }
-
-import { runForensicInvestigation } from './chatgpt';
 
 export class RobustDOMEngine {
   private observer: MutationObserver | null = null;
@@ -22,6 +23,8 @@ export class RobustDOMEngine {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private isChecking: boolean = false;
   private acquirer: ConversationAcquirer;
+  private readyDetector: ConversationReadyDetector;
+  private conversationReady: boolean = false;
   
   // Tracing State
   private wasStreaming = false;
@@ -36,28 +39,35 @@ export class RobustDOMEngine {
     this.onObservation = onObservation;
     
     this.acquirer = new ConversationAcquirer([
-      new HydrationStrategy(adapter),
-      new VisibleDOMStrategy(adapter)
-    ]);
+      new APIStrategy(adapter),          // Try first (complete history from API)
+      new HydrationStrategy(adapter),    // Try second (fallback: page hydration)
+      new VisibleDOMStrategy(adapter)    // Try last (always succeeds: visible DOM)
+    ])
     
     if (!this.acquirer) {
       throw new Error('[Engine Fatal] Dependency injection failed: ConversationAcquirer is undefined.');
     }
+
+    this.readyDetector = new ConversationReadyDetector(adapter, () => {
+      this.onConversationReady();
+    });
     
     console.log(`[Engine] ConversationAcquirer created`);
-    console.log(`[Engine] Registered strategies: Hydration, VisibleDOM`);
+    console.log(`[Engine] Registered strategies: API, Hydration, VisibleDOM`);
     console.log(`[Engine] RobustDOMEngine created`);
     console.log(`[Engine] Acquisition dependency injected: true`);
   }
 
-  public start() {
-    console.log(`[Engine] Stateless telemetry observer started for ${this.adapter.id}.`);
+  private onConversationReady(): void {
+    this.conversationReady = true;
 
-    // Removed the hardcoded diagnostic bypass because it's now properly encapsulated
-    this.observer = new MutationObserver((mutations) => {
+    // Attach MutationObserver now that conversation is ready
+    this.observer = new MutationObserver(() => {
       this.scheduleUpdate('MutationObserver');
     });
 
+    const MAX_OBSERVER_RETRIES = 20; // 20 × 50ms = 1s max
+    let retryCount = 0;
     const startObserver = () => {
       const target = this.getObservationTarget();
       if (target) {
@@ -67,15 +77,27 @@ export class RobustDOMEngine {
           characterData: true,
         });
         console.log(`[Observer] Attached to ${target.tagName || 'Document'}`);
-      } else {
+      } else if (retryCount < MAX_OBSERVER_RETRIES) {
+        retryCount++;
         setTimeout(startObserver, 50);
+      } else {
+        console.warn(`[Observer] Failed to find observation target after ${MAX_OBSERVER_RETRIES} retries`);
       }
     };
     startObserver();
 
+    // First acquisition run
+    this.scheduleUpdate('ConversationReady');
+  }
+
+  public start() {
+    console.log(`[Engine] Stateless telemetry observer started for ${this.adapter.id}.`);
+
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     this.setupUrlListener();
-    this.scheduleUpdate();
+
+    // Delegate to ConversationReadyDetector — no fixed delays
+    this.readyDetector.start();
   }
 
   public stop() {
@@ -87,6 +109,8 @@ export class RobustDOMEngine {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    this.readyDetector.stop();
+    this.conversationReady = false;
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
@@ -134,9 +158,18 @@ export class RobustDOMEngine {
     window.addEventListener('popstate', () => window.dispatchEvent(new Event('locationchange')));
 
     window.addEventListener('locationchange', () => {
-      // Always trigger an immediate check on navigation
+      // Reset readiness state on navigation — no fixed delays
       this.lastHash = '';
-      this.scheduleUpdate();
+      this.conversationReady = false;
+
+      // Disconnect old observer
+      if (this.observer) {
+        this.observer.disconnect();
+        this.observer = null;
+      }
+
+      // Re-enter the readiness gate
+      this.readyDetector.reset();
     });
   }
 
@@ -158,6 +191,88 @@ export class RobustDOMEngine {
     console.log(`\n--- processDOM Executed ---`);
     console.log(`Timestamp: ${timestamp}`);
     console.log(`Mutation reason: ${reason}`);
+
+    if (!this.conversationReady) {
+      console.log(`[Engine] Skip: conversation not ready yet`);
+      return;
+    }
+
+
+    const getScrollContainer = () => {
+      tagAllCandidateScrollContainers();
+      const selectors = [
+        'div[class*="react-scroll-to-bottom"]',
+        'div[class*="react-scroll-to-bottom--css"]',
+        'main div.overflow-y-auto',
+        'div.overflow-y-auto',
+        'main',
+        '[role="main"]',
+      ];
+      for (const selector of selectors) {
+        const el = document.querySelector(selector);
+        if (el && el.scrollHeight > el.clientHeight) {
+          console.log(`[Investigation 3 - Scroll container identity]
+Component: processDOM (Selected Option)
+tagName: ${el.tagName}
+className: ${el.className}
+id: ${el.id}
+overflowY: ${window.getComputedStyle(el).overflowY}
+scrollTop: ${el.scrollTop}
+scrollHeight: ${el.scrollHeight}
+clientHeight: ${el.clientHeight}
+boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
+          inspectScrollContainer(el, 'processDOM');
+          return el;
+        }
+      }
+      const fallback = document.documentElement || document.body;
+      console.log(`[Investigation 3 - Scroll container identity]
+Component: processDOM (Fallback)
+tagName: ${fallback.tagName}
+className: ${fallback.className}
+id: ${fallback.id}
+overflowY: ${window.getComputedStyle(fallback).overflowY}
+scrollTop: ${fallback.scrollTop}
+scrollHeight: ${fallback.scrollHeight}
+clientHeight: ${fallback.clientHeight}
+boundingClientRect: ${JSON.stringify(fallback.getBoundingClientRect())}`);
+      inspectScrollContainer(fallback, 'processDOM');
+      return fallback;
+    };
+
+    const scrollContainer = getScrollContainer();
+    const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+    const scrollHeight = scrollContainer ? scrollContainer.scrollHeight : 0;
+    const clientHeight = scrollContainer ? scrollContainer.clientHeight : 0;
+    const scrollRatio = clientHeight > 0 ? scrollHeight / clientHeight : 0;
+
+
+    // Find first visible message node position
+    const selectors = this.adapter.domSelectors || ['[data-message-author-role]', 'article', '.prose'];
+    let firstNode: Element | null = null;
+    for (const selector of selectors) {
+      const match = document.querySelector(selector);
+      if (match) {
+        firstNode = match;
+        break;
+      }
+    }
+    let firstNodePosStr = 'N/A';
+    if (firstNode && scrollContainer) {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const nodeRect = firstNode.getBoundingClientRect();
+      const topPos = nodeRect.top - containerRect.top;
+      firstNodePosStr = `${Math.round(topPos)}px from viewport top`;
+    }
+
+    const estimatedHiddenViewportAbove = clientHeight > 0 ? scrollTop / clientHeight : 0;
+    const estimatedHiddenViewportBelow = clientHeight > 0 ? Math.max(0, scrollHeight - scrollTop - clientHeight) / clientHeight : 0;
+
+    console.log(
+      `[Scroll] top=${scrollTop} height=${scrollHeight} client=${clientHeight} ` +
+      `ratio=${scrollRatio.toFixed(2)} firstNode=${firstNodePosStr} ` +
+      `hiddenAbove=${estimatedHiddenViewportAbove.toFixed(2)} hiddenBelow=${estimatedHiddenViewportBelow.toFixed(2)}`
+    );
     
     if (this.isChecking) {
       console.log(`[Engine] Skip Emission: extraction error / isChecking lock active`);
@@ -170,6 +285,75 @@ export class RobustDOMEngine {
       const threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
       const result = await this.acquirer.acquire(threadId || 'unknown', this.adapter.id);
       const visibleMessages = result.messages;
+      
+      console.log(`[Investigation 1 - Identity Check]
+window.location.href: ${window.location.href}
+URL thread ID: ${threadId}
+ConversationAcquirer thread ID: ${threadId || 'unknown'}
+DOM visible messages: ${visibleMessages.length}
+scrollTop: ${scrollTop}
+scrollHeight: ${scrollHeight}
+clientHeight: ${clientHeight}`);
+
+      // Investigation 4 - API Availability Check
+      if (this.adapter.id === 'chatgpt' && threadId) {
+        console.log(`[Investigation 4 - API Fetch] Request attempted for threadId: ${threadId}`);
+        fetch('/backend-api/conversation/' + threadId)
+          .then(async res => {
+            console.log(`[Investigation 4] HTTP status: ${res.status}`);
+            console.log(`[Investigation 4] content-type: ${res.headers.get('content-type')}`);
+            if (res.ok) {
+              const data = await res.json();
+              const strData = JSON.stringify(data);
+              console.log(`[Investigation 4] response size: ${strData.length} bytes`);
+              console.log(`[Investigation 4] top-level JSON keys: ${Object.keys(data).join(', ')}`);
+              const mappingExists = 'mapping' in data;
+              console.log(`[Investigation 4] mapping exists: ${mappingExists}`);
+              if (mappingExists && data.mapping) {
+                const nodes = Object.keys(data.mapping).length;
+                console.log(`[Investigation 4] mapping node count: ${nodes}`);
+                
+                // Count actual messages (skipping system/tool depending on payload, roughly nodes is upper bound)
+                let msgCount = 0;
+                let firstMsgId = null;
+                let lastMsgId = null;
+                for (const key of Object.keys(data.mapping)) {
+                  const node = data.mapping[key];
+                  if (node.message) {
+                    msgCount++;
+                    if (!firstMsgId) firstMsgId = node.message.id;
+                    lastMsgId = node.message.id;
+                  }
+                }
+                console.log(`[Investigation 4] normalized message count: ${msgCount}`);
+                console.log(`[Investigation 4] first message ID: ${firstMsgId}`);
+                console.log(`[Investigation 4] last message ID: ${lastMsgId}`);
+                if (nodes > visibleMessages.length) {
+                  console.log(`[Investigation 4] DIRECT CONVERSATION FETCH IS VIABLE`);
+                }
+                
+                console.log(`[Investigation 5 - Diagnostic Table]
+Source              Count
+--------------------------
+Visible DOM           ${visibleMessages.length}
+API                   ${msgCount}
+IndexedDB             ??? (Checked via background)
+Estimated             ??? (Checked via background)
+`);
+              }
+            } else {
+              if (res.status === 401 || res.status === 403) {
+                 console.log(`[Investigation 4] AUTH FAILURE`);
+              } else if (res.status === 404) {
+                 console.log(`[Investigation 4] NOT FOUND`);
+              }
+            }
+          })
+          .catch(err => {
+            console.error(`[Investigation 4] CORS / network failure:`, err);
+          });
+      }
+
       const currentHash = hashMessages(visibleMessages);
       
       const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
@@ -226,7 +410,10 @@ export class RobustDOMEngine {
           url: window.location.href,
           pageTitle: document.title,
           messages: visibleMessages,
-          isStreaming: isStreaming
+          isStreaming: isStreaming,
+          scrollTop,
+          scrollHeight,
+          clientHeight
         };
 
         if (!isStreaming && !this.wasStreaming) {

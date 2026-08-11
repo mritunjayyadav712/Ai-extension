@@ -8,6 +8,9 @@ import { SummaryEngine } from '../engines/summary';
 import { PlatformId } from '../shared/types';
 import { DegradationEngine } from '../engines/degradation';
 import { conversationManager } from '../core/ConversationManager';
+import { ContextEstimationEngine } from '../core/context-estimation/ContextEstimationEngine';
+
+const contextEstimationEngine = new ContextEstimationEngine();
 
 let creatingOffscreen: Promise<void> | null = null;
 
@@ -18,7 +21,7 @@ async function setupOffscreenDocument(path: '/offscreen.html') {
   } else {
     creatingOffscreen = chrome.offscreen.createDocument({
       url: browser.runtime.getURL(path),
-      reasons: ['WORKERS' as any],
+      reasons: [chrome.offscreen.Reason.WORKERS],
       justification: 'Run tiktoken in an offscreen document for performance',
     });
     await creatingOffscreen;
@@ -171,7 +174,61 @@ export default defineBackground(() => {
           thresholds: state.thresholds,
         });
 
-        // 7. Update the centralized Derived State (AppState)
+        // 7. Context Estimation
+        const totalUserChars = fullMessages.filter(m => m.role === 'user').reduce((acc, m) => acc + m.text.length, 0);
+        const totalAssistantChars = fullMessages.filter(m => m.role === 'ai').reduce((acc, m) => acc + m.text.length, 0);
+        const totalChars = totalUserChars + totalAssistantChars || 1;
+        
+        const userRatio = totalUserChars / totalChars;
+        const assistantRatio = totalAssistantChars / totalChars;
+        
+        const totalUserTokens = estimate.totalTokens * userRatio;
+        const totalAssistantTokens = estimate.totalTokens * assistantRatio;
+        
+        const userMsgCount = fullMessages.filter(m => m.role === 'user').length || 1;
+        const assistantMsgCount = fullMessages.filter(m => m.role === 'ai').length || 1;
+        
+        const averageUserTokens = totalUserTokens / userMsgCount;
+        const averageAssistantTokens = totalAssistantTokens / assistantMsgCount;
+
+        console.log(
+          `[ScrollContainerInvestigation][ContextEstimationEngine Input Trace]\n` +
+          `Source Payload: CONTENT_MUTATION sent from processDOM\n` +
+          `DOM Path Source: Processed by processDOM in content script\n` +
+          `scrollHeight: ${observation.scrollHeight || 0}\n` +
+          `clientHeight: ${observation.clientHeight || 0}\n` +
+          `scrollTop: ${observation.scrollTop || 0}\n` +
+          `platform: ${observation.platform}\n` +
+          `url: ${observation.url}`
+        );
+
+        const estimatedContext = contextEstimationEngine.estimate({
+          observedConversation: conversation,
+          observedTokens: estimate.totalTokens,
+          observedTurns: turns,
+          visibleMessageCount: observation.messages.length,
+          averageUserTokens,
+          averageAssistantTokens,
+          scrollTop: observation.scrollTop || 0,
+          scrollHeight: observation.scrollHeight || 0,
+          viewportHeight: observation.clientHeight || 0,
+          platform: observation.platform,
+          conversationId: conversation.id,
+          currentUrl: observation.url,
+        });
+
+        console.log(`[Investigation 2 - Estimator wiring]
+Stage: After estimation in background.ts
+conversationId: ${conversation.id}
+visibleMessageCount: ${observation.messages.length}
+scrollTop: ${observation.scrollTop || 0}
+scrollHeight: ${observation.scrollHeight || 0}
+clientHeight: ${observation.clientHeight || 0}
+estimatedTurns: ${estimatedContext.estimatedTurns}
+estimatedTokens: ${estimatedContext.estimatedTokens}
+confidence: ${estimatedContext.confidence ?? 1.0}`);
+
+        // 8. Update the centralized Derived State (AppState)
         await storageLayer.updateAppState(
           {
             tokenEstimate: {
@@ -190,9 +247,12 @@ export default defineBackground(() => {
               avgTokensPerTurn: estimate.totalTokens / turns,
               healthMetrics: degradationEngine.toLegacyMetrics(healthScore),
             },
+            estimatedContext,
           },
           tabId
         );
+
+        console.log(`[Investigation 2 - Estimator wiring] Stage: AppState updated for ${conversation.id}`);
 
         return { success: true };
       }
@@ -221,11 +281,6 @@ export default defineBackground(() => {
       }
 
       case 'REGENERATE_SUMMARY': {
-        const tabId =
-          typeof sender === 'object' && sender !== null && 'tab' in sender
-            ? (sender as { tab?: { id?: number } }).tab?.id
-            : undefined;
-            
         // We can't synchronously resolve the URL from here without querying the tab, 
         // but typically REGENERATE_SUMMARY is fired when the UI is open. 
         // In a full implementation we'd pass conversationId from the UI.

@@ -43,11 +43,19 @@ export const defaultState: AppState = {
     enableHistory: true,
     allowAnalytics: false,
   },
+  estimatedContext: {
+    observedTokens: 0,
+    estimatedTokens: 0,
+    observedTurns: 0,
+    estimatedTurns: 0,
+    coverageRatio: 1.0,
+    estimationSource: 'none',
+  },
 };
 
 type RuntimeState = Pick<
   AppState,
-  'platform' | 'status' | 'tokenEstimate' | 'stats' | 'currentSummary'
+  'platform' | 'status' | 'tokenEstimate' | 'stats' | 'currentSummary' | 'estimatedContext'
 >;
 type SettingsState = Pick<
   AppState,
@@ -72,6 +80,7 @@ const defaultRuntimeState: RuntimeState = {
   tokenEstimate: defaultState.tokenEstimate,
   stats: defaultState.stats,
   currentSummary: defaultState.currentSummary,
+  estimatedContext: defaultState.estimatedContext,
 };
 
 const defaultSettingsState: SettingsState = {

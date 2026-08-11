@@ -84,4 +84,16 @@ export interface AppState {
     enableHistory: boolean;
     allowAnalytics: boolean;
   };
+  estimatedContext?: EstimatedContext;
 }
+
+export interface EstimatedContext {
+  observedTokens: number;
+  estimatedTokens: number;
+  observedTurns: number;
+  estimatedTurns: number;
+  coverageRatio: number;
+  confidence?: number;
+  estimationSource: string;
+}
+

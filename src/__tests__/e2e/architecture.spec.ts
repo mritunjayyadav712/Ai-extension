@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import type { Page, Worker } from '@playwright/test';
 
 test.describe('Canonical Context Architecture Invariants', () => {
 
@@ -26,8 +27,8 @@ test.describe('Canonical Context Architecture Invariants', () => {
   });
 
   // Helper to inject a message into the DOM
-  async function injectMessage(page: any, id: string, role: 'user' | 'assistant', text: string) {
-    await page.evaluate(({ id, role, text }) => {
+  async function injectMessage(page: Page, id: string, role: 'user' | 'assistant', text: string) {
+    await page.evaluate(({ id, role, text }: { id: string; role: string; text: string }) => {
       const main = document.querySelector('main');
       const div = document.createElement('div');
       div.className = 'conversation-turn';
@@ -39,16 +40,16 @@ test.describe('Canonical Context Architecture Invariants', () => {
   }
   
   // Helper to modify an existing message
-  async function updateMessage(page: any, id: string, text: string) {
-    await page.evaluate(({ id, text }) => {
+  async function updateMessage(page: Page, id: string, text: string) {
+    await page.evaluate(({ id, text }: { id: string; text: string }) => {
       const msg = document.querySelector(`[data-message-id="${id}"]`) as HTMLElement;
       if (msg) msg.innerText = text;
     }, { id, text });
   }
 
   // Helper to remove messages from the DOM
-  async function removeMessages(page: any, count: number) {
-    await page.evaluate(({ count }) => {
+  async function removeMessages(page: Page, count: number) {
+    await page.evaluate(({ count }: { count: number }) => {
       const msgs = document.querySelectorAll('.conversation-turn');
       for (let i = 0; i < count; i++) {
         if (msgs[i]) msgs[i].remove();
@@ -56,14 +57,14 @@ test.describe('Canonical Context Architecture Invariants', () => {
     }, { count });
   }
 
-  async function getBackgroundState(background: any) {
+  async function getBackgroundState(background: Worker) {
     return await background.evaluate(async () => {
       return await chrome.storage.local.get(null);
     });
   }
   
-  async function getIDBConversationCount(background: any, conversationId: string) {
-    return await background.evaluate(async ({ conversationId }) => {
+  async function getIDBConversationCount(background: Worker, conversationId: string) {
+    return await background.evaluate(async ({ conversationId }: { conversationId: string }) => {
       return new Promise<number>((resolve, reject) => {
         const req = indexedDB.open('ai-context-tracker-db', 1);
         req.onsuccess = () => {

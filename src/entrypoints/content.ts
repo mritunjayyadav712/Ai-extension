@@ -4,7 +4,6 @@ import { detectPlatform } from '../adapters';
 import { RobustDOMEngine } from '../adapters/engine';
 import { messaging } from '../messaging/client';
 import { storageLayer } from '../storage';
-
 import '../ui/styles/tailwind.css';
 
 export default defineContentScript({
@@ -57,16 +56,8 @@ export default defineContentScript({
         }
       );
 
-      console.log(`[Forensic] trackingEnabled = ${state.trackingEnabled}`);
-      console.log(`[Forensic] current platform = ${adapter.id}`);
-      console.log(`[Forensic] current URL = ${window.location.href}`);
-      console.log(`[Forensic] Step 1: engine.start() entered`);
-      try {
-        engine.start();
-        console.log(`[Forensic] Step 1: PASS`);
-      } catch (e) {
-        console.error(`[Forensic] Step 1: FAIL`, e);
-      }
+      console.log(`[Startup] Starting engine for ${adapter.id}.`);
+      engine.start();
 
       // Mount the UI widget
       await mountWidget(ctx);
