@@ -1,6 +1,10 @@
 import { DOMObservation } from '../core/models';
 import { PlatformAdapter } from './types';
 import { ConversationAcquirer } from '../core/acquisition/ConversationAcquirer';
+import {
+  NetworkInterceptStrategy,
+  NetworkHistoryStore,
+} from '../core/acquisition/strategies/NetworkInterceptStrategy';
 import { APIStrategy } from '../core/acquisition/strategies/APIStrategy';
 import { VisibleDOMStrategy } from '../core/acquisition/strategies/VisibleDOMStrategy';
 import { HydrationStrategy } from '../core/acquisition/strategies/HydrationStrategy';
@@ -25,37 +29,41 @@ export class RobustDOMEngine {
   private acquirer: ConversationAcquirer;
   private readyDetector: ConversationReadyDetector;
   private conversationReady: boolean = false;
-  
+
   // Tracing State
   private wasStreaming = false;
   private lastUserMsgId = '';
   private lastAssistantMsgId = '';
 
-  constructor(
-    adapter: PlatformAdapter,
-    onObservation: (obs: DOMObservation) => void
-  ) {
+  constructor(adapter: PlatformAdapter, onObservation: (obs: DOMObservation) => void) {
     this.adapter = adapter;
     this.onObservation = onObservation;
-    
+
     this.acquirer = new ConversationAcquirer([
-      new APIStrategy(adapter),          // Try first (complete history from API)
-      new HydrationStrategy(adapter),    // Try second (fallback: page hydration)
-      new VisibleDOMStrategy(adapter)    // Try last (always succeeds: visible DOM)
-    ])
-    
+      new NetworkInterceptStrategy(adapter), // Priority 1: Intercepted Network History
+      new APIStrategy(adapter), // Priority 2: Direct API fetch fallback
+      new HydrationStrategy(adapter), // Priority 3: Page hydration fallback
+      new VisibleDOMStrategy(adapter), // Priority 4: Visible DOM fallback
+    ]);
+
     if (!this.acquirer) {
-      throw new Error('[Engine Fatal] Dependency injection failed: ConversationAcquirer is undefined.');
+      throw new Error(
+        '[Engine Fatal] Dependency injection failed: ConversationAcquirer is undefined.'
+      );
     }
 
     this.readyDetector = new ConversationReadyDetector(adapter, () => {
       this.onConversationReady();
     });
-    
+
     console.log(`[Engine] ConversationAcquirer created`);
-    console.log(`[Engine] Registered strategies: API, Hydration, VisibleDOM`);
+    console.log(`[Engine] Registered strategies: NetworkIntercept, API, Hydration, VisibleDOM`);
     console.log(`[Engine] RobustDOMEngine created`);
     console.log(`[Engine] Acquisition dependency injected: true`);
+  }
+
+  public triggerAcquisition(reason: string = 'ExternalTrigger'): void {
+    this.scheduleUpdate(reason);
   }
 
   private onConversationReady(): void {
@@ -81,7 +89,9 @@ export class RobustDOMEngine {
         retryCount++;
         setTimeout(startObserver, 50);
       } else {
-        console.warn(`[Observer] Failed to find observation target after ${MAX_OBSERVER_RETRIES} retries`);
+        console.warn(
+          `[Observer] Failed to find observation target after ${MAX_OBSERVER_RETRIES} retries`
+        );
       }
     };
     startObserver();
@@ -197,7 +207,6 @@ export class RobustDOMEngine {
       return;
     }
 
-
     const getScrollContainer = () => {
       tagAllCandidateScrollContainers();
       const selectors = [
@@ -246,9 +255,12 @@ boundingClientRect: ${JSON.stringify(fallback.getBoundingClientRect())}`);
     const clientHeight = scrollContainer ? scrollContainer.clientHeight : 0;
     const scrollRatio = clientHeight > 0 ? scrollHeight / clientHeight : 0;
 
-
     // Find first visible message node position
-    const selectors = this.adapter.domSelectors || ['[data-message-author-role]', 'article', '.prose'];
+    const selectors = this.adapter.domSelectors || [
+      '[data-message-author-role]',
+      'article',
+      '.prose',
+    ];
     let firstNode: Element | null = null;
     for (const selector of selectors) {
       const match = document.querySelector(selector);
@@ -266,51 +278,88 @@ boundingClientRect: ${JSON.stringify(fallback.getBoundingClientRect())}`);
     }
 
     const estimatedHiddenViewportAbove = clientHeight > 0 ? scrollTop / clientHeight : 0;
-    const estimatedHiddenViewportBelow = clientHeight > 0 ? Math.max(0, scrollHeight - scrollTop - clientHeight) / clientHeight : 0;
+    const estimatedHiddenViewportBelow =
+      clientHeight > 0 ? Math.max(0, scrollHeight - scrollTop - clientHeight) / clientHeight : 0;
 
     console.log(
       `[Scroll] top=${scrollTop} height=${scrollHeight} client=${clientHeight} ` +
-      `ratio=${scrollRatio.toFixed(2)} firstNode=${firstNodePosStr} ` +
-      `hiddenAbove=${estimatedHiddenViewportAbove.toFixed(2)} hiddenBelow=${estimatedHiddenViewportBelow.toFixed(2)}`
+        `ratio=${scrollRatio.toFixed(2)} firstNode=${firstNodePosStr} ` +
+        `hiddenAbove=${estimatedHiddenViewportAbove.toFixed(2)} hiddenBelow=${estimatedHiddenViewportBelow.toFixed(2)}`
     );
-    
+
     if (this.isChecking) {
       console.log(`[Engine] Skip Emission: extraction error / isChecking lock active`);
       return;
     }
-    
+
     this.isChecking = true;
 
     try {
-      const threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+      let threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+      if (!threadId) {
+        const stored = NetworkHistoryStore.get();
+        if (stored?.conversationId) {
+          threadId = stored.conversationId;
+        }
+      }
       const result = await this.acquirer.acquire(threadId || 'unknown', this.adapter.id);
       const visibleMessages = result.messages;
-      
+
+      // Calculate actual message count in live ChatGPT DOM
+      const selectors = this.adapter.domSelectors || [
+        '[data-message-author-role]',
+        'article',
+        '.prose',
+      ];
+      let querySelectorCount = 0;
+      for (const sel of selectors) {
+        const matches = document.querySelectorAll(sel);
+        if (matches.length > 0) {
+          querySelectorCount = matches.length;
+          break;
+        }
+      }
+
+      const storedNetHistory = NetworkHistoryStore.get(threadId);
+      const networkCount = storedNetHistory ? storedNetHistory.messages.length : 0;
+
+      console.log(
+        `[VERIFY:DOM_SOURCE]\n` +
+          `source=ACTUAL_DOM\n` +
+          `querySelectorCount=${querySelectorCount}\n` +
+          `canonicalCount=${visibleMessages.length}\n` +
+          `networkCount=${networkCount}`
+      );
+
       console.log(`[Investigation 1 - Identity Check]
 window.location.href: ${window.location.href}
 URL thread ID: ${threadId}
 ConversationAcquirer thread ID: ${threadId || 'unknown'}
-DOM visible messages: ${visibleMessages.length}
+Actual DOM node count: ${querySelectorCount}
+Acquired message count: ${visibleMessages.length}
 scrollTop: ${scrollTop}
 scrollHeight: ${scrollHeight}
 clientHeight: ${clientHeight}`);
 
       const currentHash = hashMessages(visibleMessages);
-      
+
       const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
-      
-      console.log(`Current DOM message count: ${visibleMessages.length}`);
-      
+
+      console.log(`Actual DOM querySelector count: ${querySelectorCount}`);
+      console.log(`Acquired message count: ${visibleMessages.length}`);
+
       if (visibleMessages.length === 0) {
         console.log(`[Engine] Skip Emission: no messages`);
         this.isChecking = false;
         return;
       }
-      
+
       const lastMsg = visibleMessages[visibleMessages.length - 1];
       console.log(`Last visible message ID: ${lastMsg.id}`);
       console.log(`Last visible message role: ${lastMsg.role}`);
-      console.log(`Last visible message first 100 chars: ${lastMsg.text.substring(0, 100).replace(/\n/g, ' ')}`);
+      console.log(
+        `Last visible message first 100 chars: ${lastMsg.text.substring(0, 100).replace(/\n/g, ' ')}`
+      );
       console.log(`Current extraction hash: ${currentHash}`);
       console.log(`Previous extraction hash: ${this.lastHash}`);
 
@@ -319,12 +368,12 @@ clientHeight: ${clientHeight}`);
         console.log(`[Trace] NEW USER PROMPT SUBMITTED: First appeared in DOM (ID: ${lastMsg.id})`);
         this.lastUserMsgId = lastMsg.id;
       }
-      
+
       if (lastMsg.role === 'ai' && lastMsg.id !== this.lastAssistantMsgId) {
         console.log(`[Trace] ASSISTANT PLACEHOLDER APPEARED (ID: ${lastMsg.id})`);
         this.lastAssistantMsgId = lastMsg.id;
       }
-      
+
       if (isStreaming && !this.wasStreaming) {
         console.log(`[Trace] STREAMING BEGINS`);
         this.wasStreaming = true;
@@ -339,12 +388,12 @@ clientHeight: ${clientHeight}`);
       } else if (currentHash !== this.lastHash) {
         willEmit = true;
       }
-      
+
       console.log(`Whether emission occurred: ${willEmit ? 'YES' : 'NO'}`);
 
       if (willEmit) {
         this.lastHash = currentHash;
-        
+
         const observation: DOMObservation = {
           platform: this.adapter.id,
           threadId,
@@ -352,9 +401,10 @@ clientHeight: ${clientHeight}`);
           pageTitle: document.title,
           messages: visibleMessages,
           isStreaming: isStreaming,
+          source: result.strategy === 'NETWORK_INTERCEPT' ? 'NETWORK' : 'DOM',
           scrollTop,
           scrollHeight,
-          clientHeight
+          clientHeight,
         };
 
         if (!isStreaming && !this.wasStreaming) {

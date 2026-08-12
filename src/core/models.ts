@@ -31,15 +31,15 @@ export interface ConversationStats {
 export interface Conversation {
   id: string; // Canonical ID: e.g. "chatgpt:uuid"
   platform: PlatformId;
-  threadId: string; 
-  metadata: Record<string, any>;
+  threadId: string;
+  metadata: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
-  
+
   // O(1) merge updates and chronological order
   messages: Record<string, ChatMessage>;
   orderedMessageIds: string[];
-  
+
   // Derived state attached directly to the entity
   summary: StructuredSummary | null;
   tokenEstimate: TokenEstimate;
@@ -57,6 +57,7 @@ export interface DOMObservation {
   pageTitle: string;
   messages: ChatMessage[];
   isStreaming: boolean;
+  source?: 'NETWORK' | 'DOM';
   scrollTop?: number;
   scrollHeight?: number;
   clientHeight?: number;

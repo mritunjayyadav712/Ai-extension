@@ -1,5 +1,6 @@
 import { PlatformAdapter } from './types';
 import { tagAllCandidateScrollContainers, inspectScrollContainer } from './utils';
+import { NetworkHistoryStore } from '../core/acquisition/strategies/NetworkInterceptStrategy';
 
 export type ReadyState =
   | 'STARTING'
@@ -64,7 +65,9 @@ export class ConversationReadyDetector {
 
       this.transition('WAITING_FOR_DOCUMENT', 'Checking document state');
       if (!document || !document.readyState) {
-        console.warn(`[ConversationReadyDetector] Document state unavailable: ${document?.readyState}`);
+        console.warn(
+          `[ConversationReadyDetector] Document state unavailable: ${document?.readyState}`
+        );
       }
 
       this.transition('WAITING_FOR_MAIN', 'Document active, locating main observation target');
@@ -76,7 +79,9 @@ export class ConversationReadyDetector {
           try {
             this.mutationCount++;
             this.lastMutationTime = Date.now();
-            console.log(`[ConversationReadyDetector Callback] MutationObserver fired (Total mutations: ${this.mutationCount})`);
+            console.log(
+              `[ConversationReadyDetector Callback] MutationObserver fired (Total mutations: ${this.mutationCount})`
+            );
           } catch (err) {
             this.logError('MutationObserver callback', err);
           }
@@ -87,13 +92,20 @@ export class ConversationReadyDetector {
           subtree: true,
           characterData: true,
         });
-        console.log(`[ConversationReadyDetector Callback] MutationObserver attached to <${observeTarget.tagName.toLowerCase()}>`);
+        console.log(
+          `[ConversationReadyDetector Callback] MutationObserver attached to <${observeTarget.tagName.toLowerCase()}>`
+        );
       } else {
-        console.warn(`[ConversationReadyDetector] Neither <main> nor <body> available for MutationObserver`);
+        console.warn(
+          `[ConversationReadyDetector] Neither <main> nor <body> available for MutationObserver`
+        );
       }
 
       if (mainExists || observeTarget) {
-        this.transition('WAITING_FOR_FIRST_MESSAGE', 'Main element located, polling for message nodes');
+        this.transition(
+          'WAITING_FOR_FIRST_MESSAGE',
+          'Main element located, polling for message nodes'
+        );
       }
 
       // Heartbeat timer (1s)
@@ -108,7 +120,9 @@ export class ConversationReadyDetector {
       // 30s Timeout timer for degraded mode fallback
       this.timeoutTimer = setTimeout(() => {
         try {
-          console.log(`[ConversationReadyDetector Callback] Timeout timer fired (30s threshold reached)`);
+          console.log(
+            `[ConversationReadyDetector Callback] Timeout timer fired (30s threshold reached)`
+          );
           this.handleTimeout();
         } catch (err) {
           this.logError('Timeout timer callback', err);
@@ -123,7 +137,6 @@ export class ConversationReadyDetector {
           this.logError('Poll timer callback', err);
         }
       }, this.POLL_INTERVAL_MS);
-
     } catch (err) {
       this.logError('start() execution', err);
     }
@@ -183,7 +196,7 @@ export class ConversationReadyDetector {
 
     console.log(
       `[ConversationReadyDetector Timeline] ${relTime} ${newState}\n` +
-      `[ConversationReadyDetector StateTransition] timestamp: ${now} | previous state: ${prevState} | next state: ${newState} | reason: ${reason}`
+        `[ConversationReadyDetector StateTransition] timestamp: ${now} | previous state: ${prevState} | next state: ${newState} | reason: ${reason}`
     );
   }
 
@@ -198,30 +211,34 @@ export class ConversationReadyDetector {
 
     console.log(
       `[ConversationReadyDetector Heartbeat]\n` +
-      `Current State: ${this.state}\n` +
-      `elapsed time: ${elapsedMs}ms\n` +
-      `messageCount: ${messageCount}\n` +
-      `selectorUsed: ${selectorUsed}\n` +
-      `document.readyState: ${document?.readyState || 'unknown'}\n` +
-      `mainExists: ${mainExists}\n` +
-      `mutationCount: ${this.mutationCount}\n` +
-      `layoutStable: ${layoutStable}\n` +
-      `scrollHeight: ${scrollHeight}\n` +
-      `clientHeight: ${clientHeight}`
+        `Current State: ${this.state}\n` +
+        `elapsed time: ${elapsedMs}ms\n` +
+        `messageCount: ${messageCount}\n` +
+        `selectorUsed: ${selectorUsed}\n` +
+        `document.readyState: ${document?.readyState || 'unknown'}\n` +
+        `mainExists: ${mainExists}\n` +
+        `mutationCount: ${this.mutationCount}\n` +
+        `layoutStable: ${layoutStable}\n` +
+        `scrollHeight: ${scrollHeight}\n` +
+        `clientHeight: ${clientHeight}`
     );
   }
 
   private logError(context: string, err: unknown): void {
     console.error(
       `[ConversationReadyDetector] Unhandled exception in ${context}\n` +
-      `Current State: ${this.state}\n` +
-      `Elapsed: ${Date.now() - this.startTime}ms\n` +
-      `Stack trace:\n${(err as Error)?.stack || String(err)}`
+        `Current State: ${this.state}\n` +
+        `Elapsed: ${Date.now() - this.startTime}ms\n` +
+        `Stack trace:\n${(err as Error)?.stack || String(err)}`
     );
   }
 
   private getMessageInfo(): { messageCount: number; selectorUsed: string } {
-    const selectors = this.adapter.domSelectors || ['[data-message-author-role]', 'article', '.prose'];
+    const selectors = this.adapter.domSelectors || [
+      '[data-message-author-role]',
+      'article',
+      '.prose',
+    ];
     for (const selector of selectors) {
       const matches = document.querySelectorAll(selector);
       if (matches.length > 0) {
@@ -263,16 +280,34 @@ boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
 
   private poll(): void {
     if (this.destroyed) {
-      console.log(`[ConversationReadyDetector] Detector exited unexpectedly | Current State: ${this.state} | Reason: Detector instance stopped/destroyed`);
+      console.log(
+        `[ConversationReadyDetector] Detector exited unexpectedly | Current State: ${this.state} | Reason: Detector instance stopped/destroyed`
+      );
       return;
     }
     if (this.state === 'FINISHED') return;
+
+    // Fast-track: If network history is already available in NetworkHistoryStore,
+    // transition immediately to READY without waiting for DOM message nodes or 30s timeout.
+    const threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+    const storedNetworkHistory = NetworkHistoryStore.get(threadId);
+
+    if (storedNetworkHistory && storedNetworkHistory.messages.length > 0) {
+      console.log(
+        `[ConversationReadyDetector] Network history available (${storedNetworkHistory.messages.length} messages). Fast-tracking readiness.`
+      );
+      this.emitReady('Network history available for conversation identity');
+      return;
+    }
 
     const mainExists = !!document.querySelector('main');
 
     if (this.state === 'WAITING_FOR_MAIN') {
       if (mainExists || document.body) {
-        this.transition('WAITING_FOR_FIRST_MESSAGE', 'Main container or document body became available');
+        this.transition(
+          'WAITING_FOR_FIRST_MESSAGE',
+          'Main container or document body became available'
+        );
       } else {
         return;
       }
@@ -282,8 +317,14 @@ boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
 
     if (this.state === 'WAITING_FOR_FIRST_MESSAGE') {
       if (messageCount > 0) {
-        this.transition('FIRST_MESSAGE_FOUND', `Detected ${messageCount} message nodes using selector "${selectorUsed}"`);
-        this.transition('WAITING_FOR_LAYOUT_STABLE', 'Waiting for scroll height stabilization & DOM mutation quiescence');
+        this.transition(
+          'FIRST_MESSAGE_FOUND',
+          `Detected ${messageCount} message nodes using selector "${selectorUsed}"`
+        );
+        this.transition(
+          'WAITING_FOR_LAYOUT_STABLE',
+          'Waiting for scroll height stabilization & DOM mutation quiescence'
+        );
         this.lastScrollHeight = -1;
         this.stableChecks = 0;
       }
@@ -293,7 +334,6 @@ boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
     if (this.state === 'WAITING_FOR_LAYOUT_STABLE') {
       const container = this.getScrollContainer();
       const currentScrollHeight = container ? container.scrollHeight : 0;
-      const currentClientHeight = container ? container.clientHeight : 0;
 
       const timeSinceLastMutation = Date.now() - this.lastMutationTime;
       const mutationsQuiesced = timeSinceLastMutation >= this.QUIESCENCE_MS;
@@ -308,7 +348,10 @@ boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
       this.lastScrollHeight = currentScrollHeight;
 
       if (this.stableChecks >= this.REQUIRED_STABLE_CHECKS) {
-        this.transition('LAYOUT_STABLE', `Scroll height (${currentScrollHeight}px) & mutations quiesced for ${this.REQUIRED_STABLE_CHECKS} consecutive checks`);
+        this.transition(
+          'LAYOUT_STABLE',
+          `Scroll height (${currentScrollHeight}px) & mutations quiesced for ${this.REQUIRED_STABLE_CHECKS} consecutive checks`
+        );
         this.emitReady('Normal readiness criteria met');
       }
       return;
@@ -321,19 +364,24 @@ boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
     const elapsed = Date.now() - this.startTime;
     console.error(
       `[ConversationReadyDetector TIMEOUT]\n` +
-      `State: ${this.state}\n` +
-      `Elapsed: ${elapsed}ms\n` +
-      `Reason: Conversation readiness not reached within ${this.TIMEOUT_MS}ms timeout`
+        `State: ${this.state}\n` +
+        `Elapsed: ${elapsed}ms\n` +
+        `Reason: Conversation readiness not reached within ${this.TIMEOUT_MS}ms timeout`
     );
 
-    this.emitReady(`Degraded mode fallback triggered after 30s timeout (Stuck in state ${this.state})`);
+    this.emitReady(
+      `Degraded mode fallback triggered after 30s timeout (Stuck in state ${this.state})`
+    );
   }
 
   private emitReady(reason: string): void {
     if (this.state === 'FINISHED') return;
 
     this.transition('READY', reason);
-    this.transition('DISPATCHING_CONVERSATION_READY', 'Invoking onReady callback to trigger acquisition pipeline');
+    this.transition(
+      'DISPATCHING_CONVERSATION_READY',
+      'Invoking onReady callback to trigger acquisition pipeline'
+    );
 
     this.cleanupTimers();
 
@@ -346,4 +394,3 @@ boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
     this.transition('FINISHED', 'CONVERSATION_READY handling complete');
   }
 }
-

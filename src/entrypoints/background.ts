@@ -5,7 +5,6 @@ import { storageLayer, defaultState } from '../storage';
 import { ExtensionMessage } from '../messaging/types';
 // TokenEngine is now offloaded to offscreen document
 import { SummaryEngine } from '../engines/summary';
-import { PlatformId } from '../shared/types';
 import { DegradationEngine } from '../engines/degradation';
 import { conversationManager } from '../core/ConversationManager';
 import { ContextEstimationEngine } from '../core/context-estimation/ContextEstimationEngine';
@@ -57,8 +56,6 @@ function getSummaryEngine(platformId: string): SummaryEngine {
   }
   return summaryEngines[platformId];
 }
-
-
 
 export default defineBackground(() => {
   console.log('[Startup] AI Context Tracker: Background Service Worker initialized');
@@ -113,13 +110,15 @@ export default defineBackground(() => {
 
       case 'CONTENT_MUTATION': {
         const observation = message.payload;
-        console.log(`[Context] Received DOM_OBSERVATION with ${observation.messages.length} messages for platform: ${observation.platform}`);
+        console.log(
+          `[Context] Received DOM_OBSERVATION with ${observation.messages.length} messages for platform: ${observation.platform}`
+        );
 
         // 1. Let the ConversationManager perform the canonical merge
         const conversation = await conversationManager.processMutation(observation);
 
         // 2. Map back to array for downstream engines
-        const fullMessages = conversation.orderedMessageIds.map(id => conversation.messages[id]);
+        const fullMessages = conversation.orderedMessageIds.map((id) => conversation.messages[id]);
 
         const tabId =
           typeof sender === 'object' && sender !== null && 'tab' in sender
@@ -134,17 +133,24 @@ export default defineBackground(() => {
         // (We do this even while streaming to keep token count live)
         await setupOffscreenDocument('/offscreen.html');
 
-        let estimate: { totalTokens: number; totalInputTokens: number; totalOutputTokens: number; confidence: number };
+        let estimate: {
+          totalTokens: number;
+          totalInputTokens: number;
+          totalOutputTokens: number;
+          confidence: number;
+        };
         try {
-          console.log(`[LLM] Requesting tokenization offscreen for ${fullMessages.length} messages.`);
-          estimate = await browser.runtime.sendMessage({
+          console.log(
+            `[LLM] Requesting tokenization offscreen for ${fullMessages.length} messages.`
+          );
+          estimate = (await browser.runtime.sendMessage({
             type: 'TOKENIZE_REQUEST',
             payload: {
               platformId: observation.platform,
               maxContext: limit,
               messages: fullMessages,
             },
-          }) as typeof estimate;
+          })) as typeof estimate;
         } catch (err) {
           console.error('[LLM] Tokenization failed:', err);
           estimate = { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, confidence: 0 };
@@ -158,7 +164,9 @@ export default defineBackground(() => {
 
         if (!observation.isStreaming) {
           if (turns >= autoSummaryThreshold) {
-            console.log(`[Summary] Triggering summary engine for ${observation.platform}. Turns: ${turns}`);
+            console.log(
+              `[Summary] Triggering summary engine for ${observation.platform}. Turns: ${turns}`
+            );
             const summaryEngine = getSummaryEngine(observation.platform);
             currentSummary = summaryEngine.processIncremental(fullMessages);
           }
@@ -175,31 +183,43 @@ export default defineBackground(() => {
         });
 
         // 7. Context Estimation
-        const totalUserChars = fullMessages.filter(m => m.role === 'user').reduce((acc, m) => acc + m.text.length, 0);
-        const totalAssistantChars = fullMessages.filter(m => m.role === 'ai').reduce((acc, m) => acc + m.text.length, 0);
+        const totalUserChars = fullMessages
+          .filter((m) => m.role === 'user')
+          .reduce((acc, m) => acc + m.text.length, 0);
+        const totalAssistantChars = fullMessages
+          .filter((m) => m.role === 'ai')
+          .reduce((acc, m) => acc + m.text.length, 0);
         const totalChars = totalUserChars + totalAssistantChars || 1;
-        
+
         const userRatio = totalUserChars / totalChars;
         const assistantRatio = totalAssistantChars / totalChars;
-        
+
         const totalUserTokens = estimate.totalTokens * userRatio;
         const totalAssistantTokens = estimate.totalTokens * assistantRatio;
-        
-        const userMsgCount = fullMessages.filter(m => m.role === 'user').length || 1;
-        const assistantMsgCount = fullMessages.filter(m => m.role === 'ai').length || 1;
-        
+
+        const userMsgCount = fullMessages.filter((m) => m.role === 'user').length || 1;
+        const assistantMsgCount = fullMessages.filter((m) => m.role === 'ai').length || 1;
+
         const averageUserTokens = totalUserTokens / userMsgCount;
         const averageAssistantTokens = totalAssistantTokens / assistantMsgCount;
 
         console.log(
           `[ScrollContainerInvestigation][ContextEstimationEngine Input Trace]\n` +
-          `Source Payload: CONTENT_MUTATION sent from processDOM\n` +
-          `DOM Path Source: Processed by processDOM in content script\n` +
-          `scrollHeight: ${observation.scrollHeight || 0}\n` +
-          `clientHeight: ${observation.clientHeight || 0}\n` +
-          `scrollTop: ${observation.scrollTop || 0}\n` +
-          `platform: ${observation.platform}\n` +
-          `url: ${observation.url}`
+            `Source Payload: CONTENT_MUTATION sent from processDOM\n` +
+            `DOM Path Source: Processed by processDOM in content script\n` +
+            `scrollHeight: ${observation.scrollHeight || 0}\n` +
+            `clientHeight: ${observation.clientHeight || 0}\n` +
+            `scrollTop: ${observation.scrollTop || 0}\n` +
+            `platform: ${observation.platform}\n` +
+            `url: ${observation.url}`
+        );
+
+        console.log(
+          `[VERIFY:ESTIMATOR_INPUT]\n` +
+            `source=CANONICAL\n` +
+            `canonicalMessageCount=${conversation.orderedMessageIds.length}\n` +
+            `domMessageCount=${observation.messages.length}\n` +
+            `estimatorMessageCount=${conversation.orderedMessageIds.length}`
         );
 
         const estimatedContext = contextEstimationEngine.estimate({
@@ -252,9 +272,28 @@ confidence: ${estimatedContext.confidence ?? 1.0}`);
           tabId
         );
 
-        console.log(`[Investigation 2 - Estimator wiring] Stage: AppState updated for ${conversation.id}`);
+        console.log(
+          `[Investigation 2 - Estimator wiring] Stage: AppState updated for ${conversation.id}`
+        );
+        console.log(
+          `[VERIFY:DERIVED]\n` +
+            `conversationId=${conversation.id}\n` +
+            `canonicalMessageCount=${conversation.orderedMessageIds.length}\n` +
+            `derivedMessageCount=${fullMessages.length}\n` +
+            `turnCount=${turns}\n` +
+            `tokenCount=${estimate.totalTokens}`
+        );
 
-        return { success: true };
+        return {
+          success: true,
+          data: {
+            conversationId: conversation.id,
+            canonicalMessageCount: conversation.orderedMessageIds.length,
+            storedMessageCount: conversation.orderedMessageIds.length,
+            turns,
+            tokens: estimate.totalTokens,
+          },
+        };
       }
 
       case 'UPDATE_TOKEN_COUNT': {
@@ -281,8 +320,8 @@ confidence: ${estimatedContext.confidence ?? 1.0}`);
       }
 
       case 'REGENERATE_SUMMARY': {
-        // We can't synchronously resolve the URL from here without querying the tab, 
-        // but typically REGENERATE_SUMMARY is fired when the UI is open. 
+        // We can't synchronously resolve the URL from here without querying the tab,
+        // but typically REGENERATE_SUMMARY is fired when the UI is open.
         // In a full implementation we'd pass conversationId from the UI.
         console.warn('REGENERATE_SUMMARY requires conversationId in new architecture.');
         return { success: false, error: 'Not fully implemented in redesign' };

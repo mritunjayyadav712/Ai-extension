@@ -1,7 +1,8 @@
 import { ChatMessage, DOMObservation } from '../models';
 import { PlatformId } from '../../shared/types';
 
-export type AcquisitionStrategyType = 'CACHE' | 'HYDRATION' | 'API' | 'DOM' | 'SCROLL' | 'FALLBACK';
+export type AcquisitionStrategyType =
+  'NETWORK_INTERCEPT' | 'CACHE' | 'HYDRATION' | 'API' | 'DOM' | 'SCROLL' | 'FALLBACK';
 
 export interface PlatformCapability {
   platformId: string;
@@ -30,8 +31,8 @@ export interface AcquisitionStrategy {
   type: AcquisitionStrategyType;
   canExecute(platform: PlatformId): boolean;
   execute(
-    threadId: string, 
-    signal?: AbortSignal, 
+    threadId: string,
+    signal?: AbortSignal,
     onProgress?: (status: AcquisitionStatus) => void
   ): Promise<AcquisitionResult>;
 }

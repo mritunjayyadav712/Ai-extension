@@ -1,19 +1,21 @@
 import { PlatformId } from '../../../shared/types';
 import { PlatformAdapter } from '../../../adapters/types';
 import { normalizeChatGPTMapping } from '../normalizeMapping';
-import { 
-  AcquisitionResult, 
-  AcquisitionStatus, 
-  AcquisitionStrategy, 
-  AcquisitionStrategyType 
+import {
+  AcquisitionResult,
+  AcquisitionStatus,
+  AcquisitionStrategy,
+  AcquisitionStrategyType,
 } from '../types';
+
+import { NetworkHistoryStore } from './NetworkInterceptStrategy';
 
 /**
  * APIStrategy
- * 
+ *
  * Fetches complete conversation history from ChatGPT's backend API.
  * This strategy makes a direct fetch() from the content script context.
- * 
+ *
  * NOTE: This currently returns 404 because the isolated content script
  * does not carry ChatGPT's session tokens. The NetworkInterceptStrategy
  * (via MAIN-world interception) is the primary method for acquiring
@@ -28,8 +30,12 @@ export class APIStrategy implements AcquisitionStrategy {
   }
 
   public canExecute(platform: PlatformId): boolean {
-    // Only ChatGPT has the backend API available
-    return platform === 'chatgpt';
+    if (platform !== 'chatgpt') return false;
+    const threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+    if (threadId && NetworkHistoryStore.has(threadId)) {
+      return false; // Network history is authoritative fast-path
+    }
+    return true;
   }
 
   public async execute(
@@ -45,7 +51,7 @@ export class APIStrategy implements AcquisitionStrategy {
           success: false,
           messages: [],
           isComplete: false,
-          error: new Error('Acquisition cancelled before API call')
+          error: new Error('Acquisition cancelled before API call'),
         };
       }
 
@@ -53,10 +59,10 @@ export class APIStrategy implements AcquisitionStrategy {
       const response = await fetch(`/backend-api/conversation/${threadId}`, {
         method: 'GET',
         headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
         },
-        signal
+        signal,
       });
 
       // Handle HTTP errors
@@ -66,7 +72,7 @@ export class APIStrategy implements AcquisitionStrategy {
           success: false,
           messages: [],
           isComplete: false,
-          error: new Error(`API returned HTTP ${response.status}: ${response.statusText}`)
+          error: new Error(`API returned HTTP ${response.status}: ${response.statusText}`),
         };
       }
 
@@ -80,14 +86,14 @@ export class APIStrategy implements AcquisitionStrategy {
         onProgress?.({
           state: 'SUCCESS',
           currentStrategy: this.type,
-          messagesFound: messages.length
+          messagesFound: messages.length,
         });
 
         return {
           strategy: this.type,
           success: true,
           messages,
-          isComplete: true  // ← API gives us complete history
+          isComplete: true, // ← API gives us complete history
         };
       }
 
@@ -96,9 +102,8 @@ export class APIStrategy implements AcquisitionStrategy {
         success: false,
         messages: [],
         isComplete: false,
-        error: new Error('API returned empty message list')
+        error: new Error('API returned empty message list'),
       };
-
     } catch (error) {
       // Handle abort error separately
       if (error instanceof Error && error.name === 'AbortError') {
@@ -107,7 +112,7 @@ export class APIStrategy implements AcquisitionStrategy {
           success: false,
           messages: [],
           isComplete: false,
-          error: new Error('API acquisition cancelled')
+          error: new Error('API acquisition cancelled'),
         };
       }
 
@@ -117,7 +122,7 @@ export class APIStrategy implements AcquisitionStrategy {
         success: false,
         messages: [],
         isComplete: false,
-        error: error as Error
+        error: error as Error,
       };
     }
   }
