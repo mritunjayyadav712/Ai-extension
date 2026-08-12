@@ -1,6 +1,6 @@
 import { PlatformId } from '../../../shared/types';
 import { PlatformAdapter } from '../../../adapters/types';
-import { ChatMessage, MessageRole } from '../../models';
+import { normalizeChatGPTMapping } from '../normalizeMapping';
 import { 
   AcquisitionResult, 
   AcquisitionStatus, 
@@ -12,8 +12,12 @@ import {
  * APIStrategy
  * 
  * Fetches complete conversation history from ChatGPT's backend API.
- * This is the most reliable way to get the full conversation without requiring
- * the user to scroll through the entire history.
+ * This strategy makes a direct fetch() from the content script context.
+ * 
+ * NOTE: This currently returns 404 because the isolated content script
+ * does not carry ChatGPT's session tokens. The NetworkInterceptStrategy
+ * (via MAIN-world interception) is the primary method for acquiring
+ * complete history. This strategy is retained as a documented fallback.
  */
 export class APIStrategy implements AcquisitionStrategy {
   public type: AcquisitionStrategyType = 'API';
@@ -69,8 +73,8 @@ export class APIStrategy implements AcquisitionStrategy {
       // Parse response
       const data = await response.json();
 
-      // Normalize response to ChatMessage[]
-      const messages = this.normalizeResponse(data);
+      // Normalize response to ChatMessage[] using shared normalizer
+      const messages = normalizeChatGPTMapping(data);
 
       if (messages.length > 0) {
         onProgress?.({
@@ -116,107 +120,5 @@ export class APIStrategy implements AcquisitionStrategy {
         error: error as Error
       };
     }
-  }
-
-  /**
-   * Normalize ChatGPT API response to ChatMessage[]
-   * 
-   * ChatGPT's /backend-api/conversation/{id} endpoint returns:
-   * {
-   *   "mapping": {
-   *     "node_id_1": {
-   *       "id": "msg_id_1",
-   *       "message": {
-   *         "id": "msg_id_1",
-   *         "author": { "role": "user" | "assistant" | "system" },
-   *         "content": { "parts": ["text content"] },
-   *         "create_time": timestamp
-   *       }
-   *     },
-   *     ...
-   *   }
-   * }
-   */
-  private normalizeResponse(data: any): ChatMessage[] {
-    const messages: ChatMessage[] = [];
-
-    if (!data || typeof data !== 'object') {
-      return messages;
-    }
-
-    // Handle ChatGPT API response structure: mapping object
-    if (data.mapping && typeof data.mapping === 'object') {
-      const mapping = data.mapping;
-      
-      // mapping is { node_id: { message: {...} }, ... }
-      // We need to preserve order, so collect with timestamps
-      const messageEntries: Array<{ node: any; msg: any; time: number }> = [];
-
-      for (const nodeId in mapping) {
-        try {
-          const node = mapping[nodeId];
-          
-          // Some nodes may not have messages (they're structural)
-          if (!node || !node.message) {
-            continue;
-          }
-
-          const msg = node.message;
-          const createTime = msg.create_time || 0;
-          
-          messageEntries.push({ node, msg, time: createTime });
-        } catch (e) {
-          // Skip malformed entries
-          continue;
-        }
-      }
-
-      // Sort by creation time to preserve conversation order
-      messageEntries.sort((a, b) => a.time - b.time);
-
-      // Extract messages
-      for (const entry of messageEntries) {
-        try {
-          const msg = entry.msg;
-          
-          // Determine role
-          const authorRole = msg.author?.role;
-          let role: MessageRole;
-          
-          if (authorRole === 'user') {
-            role = 'user';
-          } else if (authorRole === 'assistant') {
-            role = 'ai';
-          } else {
-            // Skip system messages or unknown roles
-            continue;
-          }
-
-          // Extract text content
-          let text = '';
-          if (msg.content?.parts && Array.isArray(msg.content.parts)) {
-            text = msg.content.parts
-              .filter((part: any) => typeof part === 'string')
-              .join('\n');
-          } else if (typeof msg.content === 'string') {
-            text = msg.content;
-          }
-
-          // Only include messages with actual content
-          if (text && text.trim()) {
-            messages.push({
-              id: msg.id || `msg_${messages.length}`,
-              role,
-              text: text.trim()
-            });
-          }
-        } catch (e) {
-          // Skip messages that fail to parse
-          continue;
-        }
-      }
-    }
-
-    return messages;
   }
 }

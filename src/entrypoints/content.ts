@@ -4,6 +4,8 @@ import { detectPlatform } from '../adapters';
 import { RobustDOMEngine } from '../adapters/engine';
 import { messaging } from '../messaging/client';
 import { storageLayer } from '../storage';
+import { normalizeChatGPTMapping } from '../core/acquisition/normalizeMapping';
+import { DOMObservation } from '../core/models';
 import '../ui/styles/tailwind.css';
 
 export default defineContentScript({
@@ -58,6 +60,52 @@ export default defineContentScript({
 
       console.log(`[Startup] Starting engine for ${adapter.id}.`);
       engine.start();
+
+      // Network Intercept Bridge: Listen for conversation data from the MAIN-world
+      // network interceptor (networkDiscovery.content.ts). The MAIN world intercepts
+      // ChatGPT's own authenticated fetch and posts the mapping data via postMessage.
+      // We normalize it and forward it through the same CONTENT_MUTATION pipeline.
+      if (adapter.id === 'chatgpt') {
+        window.addEventListener('message', (event: MessageEvent) => {
+          // Security: only accept messages from this window
+          if (event.source !== window) return;
+          if (!event.data || event.data.type !== '__CTXTRACKER_NETWORK_CONVERSATION__') return;
+
+          const { conversationId, mapping, url: interceptedUrl } = event.data.payload;
+
+          if (!mapping || !conversationId) {
+            console.warn('[NetworkBridge] Received malformed conversation data');
+            return;
+          }
+
+          console.log(`[NetworkBridge] Received intercepted conversation: ${conversationId}`);
+
+          // Normalize using the shared ChatGPT mapping parser
+          const messages = normalizeChatGPTMapping({ mapping });
+
+          if (messages.length > 0) {
+            const observation: DOMObservation = {
+              platform: 'chatgpt',
+              threadId: conversationId,
+              url: interceptedUrl || window.location.href,
+              pageTitle: document.title,
+              messages,
+              isStreaming: false,
+            };
+
+            messaging.sendToBackground({
+              type: 'CONTENT_MUTATION',
+              payload: observation,
+            });
+
+            console.log(`[NetworkBridge] Forwarded ${messages.length} messages from network intercept for ${conversationId}`);
+          } else {
+            console.warn(`[NetworkBridge] Normalization returned 0 messages for ${conversationId}`);
+          }
+        });
+
+        console.log(`[NetworkBridge] Listener registered for ChatGPT network intercept bridge`);
+      }
 
       // Mount the UI widget
       await mountWidget(ctx);

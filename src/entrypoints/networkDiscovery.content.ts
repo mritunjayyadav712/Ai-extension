@@ -110,6 +110,27 @@ Structural Keys Found: mapping=${metadata.hasMapping}, messages=${metadata.hasMe
         hasMessageHistory
       });
 
+      // Bridge: Forward successful conversation responses to the ISOLATED content script
+      // via window.postMessage. The ISOLATED world cannot intercept page fetches but
+      // shares the window message event bus with the MAIN world.
+      if (status === 200 && hasMapping && hasConversationId && bodyText) {
+        try {
+          const data = JSON.parse(bodyText);
+          window.postMessage({
+            type: '__CTXTRACKER_NETWORK_CONVERSATION__',
+            payload: {
+              url,
+              conversationId: data.conversation_id,
+              mapping: data.mapping,
+              currentNode: data.current_node || null,
+            }
+          }, '*');
+          console.log(`%c[Network Discovery] Bridged conversation ${data.conversation_id} to content script (${Object.keys(data.mapping).length} nodes)`, 'color: #10b981;');
+        } catch (bridgeErr) {
+          console.warn('[Network Discovery] Failed to bridge conversation data:', bridgeErr);
+        }
+      }
+
       setTimeout(() => { currentTrigger = 'IDLE'; }, 1000);
     }
 

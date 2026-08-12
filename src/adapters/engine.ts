@@ -295,65 +295,6 @@ scrollTop: ${scrollTop}
 scrollHeight: ${scrollHeight}
 clientHeight: ${clientHeight}`);
 
-      // Investigation 4 - API Availability Check
-      if (this.adapter.id === 'chatgpt' && threadId) {
-        console.log(`[Investigation 4 - API Fetch] Request attempted for threadId: ${threadId}`);
-        fetch('/backend-api/conversation/' + threadId)
-          .then(async res => {
-            console.log(`[Investigation 4] HTTP status: ${res.status}`);
-            console.log(`[Investigation 4] content-type: ${res.headers.get('content-type')}`);
-            if (res.ok) {
-              const data = await res.json();
-              const strData = JSON.stringify(data);
-              console.log(`[Investigation 4] response size: ${strData.length} bytes`);
-              console.log(`[Investigation 4] top-level JSON keys: ${Object.keys(data).join(', ')}`);
-              const mappingExists = 'mapping' in data;
-              console.log(`[Investigation 4] mapping exists: ${mappingExists}`);
-              if (mappingExists && data.mapping) {
-                const nodes = Object.keys(data.mapping).length;
-                console.log(`[Investigation 4] mapping node count: ${nodes}`);
-                
-                // Count actual messages (skipping system/tool depending on payload, roughly nodes is upper bound)
-                let msgCount = 0;
-                let firstMsgId = null;
-                let lastMsgId = null;
-                for (const key of Object.keys(data.mapping)) {
-                  const node = data.mapping[key];
-                  if (node.message) {
-                    msgCount++;
-                    if (!firstMsgId) firstMsgId = node.message.id;
-                    lastMsgId = node.message.id;
-                  }
-                }
-                console.log(`[Investigation 4] normalized message count: ${msgCount}`);
-                console.log(`[Investigation 4] first message ID: ${firstMsgId}`);
-                console.log(`[Investigation 4] last message ID: ${lastMsgId}`);
-                if (nodes > visibleMessages.length) {
-                  console.log(`[Investigation 4] DIRECT CONVERSATION FETCH IS VIABLE`);
-                }
-                
-                console.log(`[Investigation 5 - Diagnostic Table]
-Source              Count
---------------------------
-Visible DOM           ${visibleMessages.length}
-API                   ${msgCount}
-IndexedDB             ??? (Checked via background)
-Estimated             ??? (Checked via background)
-`);
-              }
-            } else {
-              if (res.status === 401 || res.status === 403) {
-                 console.log(`[Investigation 4] AUTH FAILURE`);
-              } else if (res.status === 404) {
-                 console.log(`[Investigation 4] NOT FOUND`);
-              }
-            }
-          })
-          .catch(err => {
-            console.error(`[Investigation 4] CORS / network failure:`, err);
-          });
-      }
-
       const currentHash = hashMessages(visibleMessages);
       
       const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
